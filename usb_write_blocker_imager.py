@@ -346,6 +346,9 @@ class MainWindow(QtWidgets.QMainWindow):
         handler.setFormatter(logging.Formatter("%(asctime)s - %(message)s", datefmt="%H:%M:%S"))
         self.logger.addHandler(handler)
         
+        # Force write protection OFF on startup (clears any leftover registry keys)
+        self.blocker.disable()
+        
         # Initial status check
         self.refresh_status()
         self.logger.info(f"{APP_TITLE} {APP_VERSION} initialized")

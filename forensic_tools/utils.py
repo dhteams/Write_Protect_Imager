@@ -39,7 +39,17 @@ def _cleanup_write_block():
     except Exception:
         pass
     
-    # Clear Method 2: Group Policy - Removable Storage
+    # Clear Method 2a: Group Policy - Disk Drives
+    try:
+        guid_disk = "{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}"
+        key_path_gp_disk = rf"SOFTWARE\Policies\Microsoft\Windows\RemovableStorageDevices\{guid_disk}"
+        k = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path_gp_disk, 0, winreg.KEY_SET_VALUE)
+        winreg.SetValueEx(k, "Deny_Write", 0, winreg.REG_DWORD, 0)
+        winreg.CloseKey(k)
+    except Exception:
+        pass
+    
+    # Clear Method 2b: Group Policy - Removable Storage
     try:
         guid_removable = "{53f56307-b6bf-11d0-94f2-00a0c91efb8b}"
         key_path_gp = rf"SOFTWARE\Policies\Microsoft\Windows\RemovableStorageDevices\{guid_removable}"
