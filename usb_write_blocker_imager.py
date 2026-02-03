@@ -339,15 +339,15 @@ class MainWindow(QtWidgets.QMainWindow):
         # Initialize components
         self.blocker = USBWriteBlocker()
         
+        # Force write protection OFF on startup (clears leftover keys from crashes)
+        self.blocker.disable()
+        
         # Setup logging
         self.logger = logging.getLogger("ForensicTools")
         self.logger.setLevel(logging.DEBUG)
         handler = QtLogHandler(self.log_text)
         handler.setFormatter(logging.Formatter("%(asctime)s - %(message)s", datefmt="%H:%M:%S"))
         self.logger.addHandler(handler)
-        
-        # Force write protection OFF on startup (clears any leftover registry keys)
-        self.blocker.disable()
         
         # Initial status check
         self.refresh_status()

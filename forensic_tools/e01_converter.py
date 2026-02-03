@@ -765,6 +765,21 @@ class E01ArchiveDialog(QtWidgets.QDialog):
                 QtWidgets.QMessageBox.critical(self, "Cannot Delete", f"Cannot delete existing file:\n{e}")
                 return
         
+        # Ensure dst has .zip extension
+        # If user manually edited it or it's malformed, fix it
+        if not dst.lower().endswith('.zip'):
+            # dst might be:
+            # - Just a folder path
+            # - A file path without extension
+            # Build proper ZIP filename from source
+            src_basename = os.path.splitext(os.path.basename(src))[0]
+            # If dst looks like a folder (no extension), join with filename
+            if not os.path.splitext(dst)[1]:
+                dst = os.path.join(dst, f"{src_basename}_Archive.zip")
+            else:
+                # Has some extension but not .zip - replace it
+                dst = os.path.splitext(dst)[0] + ".zip"
+        
         # Derive E01 path from zip path
         e01_dst = dst.replace("_Archive.zip", ".E01").replace(".zip", ".E01")
         if not e01_dst.upper().endswith('.E01'):
