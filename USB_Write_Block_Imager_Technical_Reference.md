@@ -1,6 +1,6 @@
 # USB Write Blocker + Imager - Technical Reference
 
-**Version:** 2.3.0  
+**Version:** 2.2.0  
 **Status:** Production Ready  
 **Platform:** Windows 10/11 (x64)  
 **Last Updated:** 2026-02-03
