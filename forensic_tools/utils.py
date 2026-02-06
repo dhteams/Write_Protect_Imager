@@ -24,8 +24,18 @@ _global_write_block_state = {
 
 # ---------------- Cleanup Handlers ----------------
 def _cleanup_write_block():
-    """Cleanup handler - clears all write protection registry keys on exit."""
-    if not _global_write_block_state["enabled"]:
+    """
+    Cleanup handler - clears ALL write protection registry keys on exit.
+    
+    IMPORTANT: This runs unconditionally to handle crash recovery.
+    Even if state tracking shows disabled, registry keys may be set from:
+    - Previous crash before state was updated
+    - Force-close via Task Manager
+    - Unexpected termination
+    
+    Clearing already-cleared keys is harmless (just sets 0 to 0).
+    """
+    if not IS_WINDOWS:
         return
     
     import winreg
@@ -49,7 +59,7 @@ def _cleanup_write_block():
     except Exception:
         pass
     
-    # Clear Method 2a: Group Policy - Disk Drives (USB hubs)
+    # Clear Method 3: Group Policy - Disk Drives (USB hubs)
     try:
         guid_disk = "{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}"
         key_path_gp_disk = rf"SOFTWARE\Policies\Microsoft\Windows\RemovableStorageDevices\{guid_disk}"
@@ -194,9 +204,11 @@ def write_report(
     sha1: str,
     status: str,
     method: str = "dd",
-    sha256: str = ""
+    sha256: str = "",
+    metadata: Dict = None
 ) -> str:
     report_path = output_file.with_suffix(".txt")
+    metadata = metadata or {}
     
     try:
         with open(report_path, "w", encoding="utf-8") as f:
@@ -213,6 +225,17 @@ def write_report(
             f.write(f"System: {os.environ.get('COMPUTERNAME', 'Unknown')}\n")
             f.write(f"Imaging Method: {method}\n")
             f.write(f"Status: {status}\n\n")
+
+            # Case Information section (if any metadata provided)
+            if any(metadata.get(k) for k in ['case_number', 'evidence_number', 'examiner', 'description', 'notes']):
+                f.write("CASE INFORMATION\n" + "-" * 40 + "\n")
+                f.write(f"Case Number: {metadata.get('case_number') or 'N/A'}\n")
+                f.write(f"Evidence Number: {metadata.get('evidence_number') or 'N/A'}\n")
+                f.write(f"Examiner: {metadata.get('examiner') or 'N/A'}\n")
+                f.write(f"Description: {metadata.get('description') or 'N/A'}\n")
+                if metadata.get('notes'):
+                    f.write(f"Notes:\n{metadata['notes']}\n")
+                f.write("\n")
 
             f.write("DEVICE INFORMATION\n" + "-" * 40 + "\n")
             f.write(f"Drive Letter: {device_info.get('drive_letter', 'N/A')}\n")

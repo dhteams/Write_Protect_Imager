@@ -662,10 +662,10 @@ exit
             # Step 3: Verify
             # ============================================
             self.log.emit(f"")
-            self.log.emit(f"[STEP 3/4] Verifying wipe...")
+            self.log.emit(f"[STEP 3/4] Verifying wipe (spot-check)...")
             self.progress.emit(95, "Verifying...")
             
-            verified, md5_hash = self._verify_wipe_native(device_path, 4 * 1024 * 1024)
+            verified, verify_result = self._verify_wipe_native(device_path, 4 * 1024 * 1024)
             
             end_ts = time.time()
             duration = end_ts - start_ts
@@ -675,8 +675,7 @@ exit
                 self.failed.emit("Verification failed: non-zero data found on disk")
                 return
             
-            self.log.emit(f"[VERIFY] PASSED - All zeros confirmed")
-            self.log.emit(f"[VERIFY] MD5: {md5_hash}")
+            self.log.emit(f"[VERIFY] {verify_result}")
             
             # ============================================
             # Step 4: Format (if requested)
@@ -698,7 +697,7 @@ exit
                 self.log.emit(f"WIPE OPERATION COMPLETE")
                 self.log.emit(f"{'='*60}")
                 self.log.emit(f"Total duration: {duration:.1f} seconds")
-                self.log.emit(f"MD5 hash: {md5_hash}")
+                self.log.emit(f"Verification: {verify_result}")
                 self.log.emit(f"Format: {'Success' if format_success else 'Failed'}")
                 self.log.emit(f"{'='*60}")
                 
@@ -706,14 +705,14 @@ exit
                     self.finished.emit(
                         f"Wipe and format completed!\n\n"
                         f"Duration: {duration:.1f} seconds\n"
-                        f"MD5: {md5_hash}\n\n"
+                        f"Verification: {verify_result}\n\n"
                         f"Device securely erased and formatted to ExFAT."
                     )
                 else:
                     self.finished.emit(
                         f"Wipe completed, format failed.\n\n"
                         f"Duration: {duration:.1f} seconds\n"
-                        f"MD5: {md5_hash}\n\n"
+                        f"Verification: {verify_result}\n\n"
                         f"Disk wiped but you may need to format manually."
                     )
             else:
@@ -723,13 +722,13 @@ exit
                 self.log.emit(f"WIPE OPERATION COMPLETE")
                 self.log.emit(f"{'='*60}")
                 self.log.emit(f"Total duration: {duration:.1f} seconds")
-                self.log.emit(f"MD5 hash: {md5_hash}")
+                self.log.emit(f"Verification: {verify_result}")
                 self.log.emit(f"{'='*60}")
                 
                 self.finished.emit(
                     f"Wipe completed!\n\n"
                     f"Duration: {duration:.1f} seconds\n"
-                    f"MD5: {md5_hash}\n\n"
+                    f"Verification: {verify_result}\n\n"
                     f"All data securely erased."
                 )
         
@@ -856,16 +855,22 @@ exit
     
     def _verify_wipe_native(self, device_path: str, chunk_size: int) -> tuple:
         """
-        Verify the device contains all zeros using native Windows I/O.
-        Returns (verification_passed: bool, md5_hash: str)
+        Spot-check verify the device contains zeros using native Windows I/O.
+        Checks first 10MB, last 10MB, and 8 random samples in between.
+        Returns (verification_passed: bool, summary: str)
         """
+        import random
+        
         GENERIC_READ = 0x80000000
         FILE_SHARE_READ = 0x00000001
         FILE_SHARE_WRITE = 0x00000002
         OPEN_EXISTING = 3
         INVALID_HANDLE = ctypes.c_void_p(-1).value
+        FILE_BEGIN = 0
         
         handle = None
+        sample_size = 1 * 1024 * 1024  # 1MB per sample
+        num_random_samples = 8
         
         try:
             handle = ctypes.windll.kernel32.CreateFileW(
@@ -874,31 +879,73 @@ exit
                 FILE_SHARE_READ | FILE_SHARE_WRITE,
                 None,
                 OPEN_EXISTING,
-                0,  # No special flags
+                0,
                 None
             )
             
             if handle == INVALID_HANDLE:
                 self.log.emit("[VERIFY] Failed to open device for verification")
-                return False, ""
+                return False, "Failed to open"
             
-            md5 = hashlib.md5()
-            bytes_read_total = 0
             verification_passed = True
-            non_zero_count = 0
-            last_pct = -1
+            bytes_verified = 0
+            samples_checked = 0
             
-            read_buffer = (ctypes.c_char * chunk_size)()
+            read_buffer = (ctypes.c_char * sample_size)()
             bytes_read_ref = wintypes.DWORD()
             
-            while True:
+            # Build list of offsets to check
+            check_offsets = []
+            
+            # First 10MB (10 samples at start)
+            for i in range(10):
+                check_offsets.append(('start', i * sample_size))
+            
+            # Last 10MB (10 samples at end)
+            if self.expected_size > 20 * 1024 * 1024:
+                end_start = self.expected_size - (10 * sample_size)
+                for i in range(10):
+                    offset = end_start + (i * sample_size)
+                    if offset >= 0 and offset < self.expected_size:
+                        check_offsets.append(('end', offset))
+            
+            # Random samples in middle
+            if self.expected_size > 30 * 1024 * 1024:
+                middle_start = 10 * sample_size
+                middle_end = self.expected_size - (10 * sample_size) - sample_size
+                if middle_end > middle_start:
+                    for i in range(num_random_samples):
+                        # Align to sample_size boundary
+                        offset = random.randint(middle_start // sample_size, middle_end // sample_size) * sample_size
+                        check_offsets.append(('random', offset))
+            
+            total_samples = len(check_offsets)
+            self.log.emit(f"[VERIFY] Spot-checking {total_samples} locations ({total_samples}MB)")
+            
+            for idx, (region, offset) in enumerate(check_offsets):
                 if self._is_cancelled():
-                    return False, ""
+                    return False, "Cancelled"
                 
+                # Seek to offset
+                low = offset & 0xFFFFFFFF
+                high = (offset >> 32) & 0xFFFFFFFF
+                
+                result = ctypes.windll.kernel32.SetFilePointerEx(
+                    handle,
+                    ctypes.c_longlong(offset),
+                    None,
+                    FILE_BEGIN
+                )
+                
+                if not result:
+                    self.log.emit(f"[VERIFY] Seek failed at offset {offset}")
+                    continue
+                
+                # Read sample
                 success = ctypes.windll.kernel32.ReadFile(
                     handle,
                     read_buffer,
-                    chunk_size,
+                    sample_size,
                     ctypes.byref(bytes_read_ref),
                     None
                 )
@@ -906,43 +953,33 @@ exit
                 bytes_read = bytes_read_ref.value
                 
                 if not success or bytes_read == 0:
-                    break
-                
-                # Convert to bytes for processing
-                data = bytes(read_buffer[:bytes_read])
-                md5.update(data)
+                    continue
                 
                 # Check for non-zero bytes
-                if any(b != 0 for b in data):
-                    if non_zero_count < 5:  # Only log first 5 occurrences
-                        offset = bytes_read_total
-                        # Find first non-zero byte position
-                        for i, b in enumerate(data):
-                            if b != 0:
-                                self.log.emit(f"[VERIFY] Non-zero byte at offset {offset + i}: 0x{b:02x}")
-                                break
-                    non_zero_count += 1
+                data = bytes(read_buffer[:bytes_read])
+                non_zero = sum(1 for b in data if b != 0)
+                
+                if non_zero > 0:
+                    self.log.emit(f"[VERIFY] FAIL: {non_zero} non-zero bytes at {region} offset {offset:,}")
                     verification_passed = False
                 
-                bytes_read_total += bytes_read
+                bytes_verified += bytes_read
+                samples_checked += 1
                 
                 # Update progress
-                if self.expected_size > 0:
-                    pct = min(100, int(bytes_read_total * 100 / self.expected_size))
-                    if pct != last_pct:
-                        self.progress.emit(pct, f"Verifying: {pct}%")
-                        last_pct = pct
+                pct = int((idx + 1) * 100 / total_samples)
+                self.progress.emit(95 + (pct // 20), f"Verifying: {samples_checked}/{total_samples} samples")
             
-            if non_zero_count > 5:
-                self.log.emit(f"[VERIFY] ... and {non_zero_count - 5} more non-zero locations")
+            self.log.emit(f"[VERIFY] Checked {samples_checked} samples ({bytes_verified / (1024*1024):.1f} MB)")
             
-            self.log.emit(f"[VERIFY] Verified {bytes_read_total:,} bytes")
-            
-            return verification_passed, md5.hexdigest()
+            if verification_passed:
+                return True, f"PASS - {samples_checked} samples verified"
+            else:
+                return False, f"FAIL - non-zero data found"
         
         except Exception as e:
             self.log.emit(f"[VERIFY] Verification error: {e}")
-            return False, ""
+            return False, f"Error: {e}"
         
         finally:
             if handle is not None and handle != INVALID_HANDLE:

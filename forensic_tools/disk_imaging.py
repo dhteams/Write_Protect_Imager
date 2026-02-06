@@ -25,23 +25,24 @@ class ImageWorker(QtCore.QThread):
     Signals:
         progress(int, float, float): Progress percentage, speed (MB/s), ETA (seconds)
         log(str): Log messages
-        finished_report(str, int): Report path and copied bytes on success
-        partial_report(str, int): Report path and copied bytes on cancel/error
+        finished_report(str, object): Report path and copied bytes on success
+        partial_report(str, object): Report path and copied bytes on cancel/error
         hash_progress(int): Hash calculation progress percentage
     """
     progress = QtCore.Signal(int, float, float)
     log = QtCore.Signal(str)
-    finished_report = QtCore.Signal(str, int)
-    partial_report = QtCore.Signal(str, int)
+    finished_report = QtCore.Signal(str, object)  # object to handle large file sizes (>2GB)
+    partial_report = QtCore.Signal(str, object)   # object to handle large file sizes (>2GB)
     hash_progress = QtCore.Signal(int)
 
-    def __init__(self, src: str, dst: str, expected: int, device_info: Dict, dd_path: str, calculate_sha256: bool = False, use_error_recovery: bool = False):
+    def __init__(self, src: str, dst: str, expected: int, device_info: Dict, dd_path: str, metadata: Dict = None, calculate_sha256: bool = False, use_error_recovery: bool = False):
         super().__init__()
         self.src = src
         self.dst = dst
         self.expected = expected
         self._dev_info = device_info
         self.dd_path = dd_path
+        self.metadata = metadata or {}
         self.calculate_sha256 = calculate_sha256
         self.use_error_recovery = use_error_recovery
         self.chunk = 4 * 1024 * 1024  # 4 MB chunks for hash calculation
@@ -295,7 +296,8 @@ class ImageWorker(QtCore.QThread):
         end_ts = time.time()
         report_path = write_report(
             Path(self.dst), self._dev_info, self.start_ts, end_ts,
-            self.expected, copied, md5, sha1, status, method, sha256
+            self.expected, copied, md5, sha1, status, method, sha256,
+            metadata=self.metadata
         )
         self.log.emit(f"[REPORT] {Path(report_path).name}")
         if error_msg:
@@ -318,7 +320,7 @@ class ImagingDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.setWindowTitle("Forensic Image Creation")
         self.setModal(True)
-        self.resize(850, 600)
+        self.resize(850, 750)
         
         self.blocker = blocker
         self.logger = logger
@@ -394,9 +396,46 @@ class ImagingDialog(QtWidgets.QDialog):
             }
         """)
         
-        layout = QtWidgets.QVBoxLayout(self)
+        main_layout = QtWidgets.QVBoxLayout(self)
+        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        
+        # Create scroll area
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        scroll.setStyleSheet("""
+            QScrollArea {
+                background: #1a1d23;
+                border: none;
+            }
+            QScrollBar:vertical {
+                background: #252932;
+                width: 12px;
+                border-radius: 6px;
+                margin: 2px;
+            }
+            QScrollBar::handle:vertical {
+                background: #4a5162;
+                border-radius: 5px;
+                min-height: 30px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #5a6272;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+        """)
+        
+        # Content widget inside scroll area
+        content_widget = QtWidgets.QWidget()
+        content_widget.setStyleSheet("background: #1a1d23;")
+        layout = QtWidgets.QVBoxLayout(content_widget)
         layout.setSpacing(20)
-        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setContentsMargins(20, 20, 20, 20)
         
         # Title
         title = QtWidgets.QLabel("Forensic Disk Imaging")
@@ -472,6 +511,61 @@ class ImagingDialog(QtWidgets.QDialog):
         output_layout.addLayout(out_row)
         
         layout.addWidget(output_group)
+        
+        # Case Information
+        case_group = QtWidgets.QGroupBox("Case Information (Optional)")
+        case_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: 600;
+                border: 2px solid #2d3139;
+                border-radius: 8px;
+                margin-top: 12px;
+                padding-top: 20px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 16px;
+                padding: 0 8px;
+            }
+        """)
+        case_layout = QtWidgets.QGridLayout(case_group)
+        case_layout.setSpacing(12)
+        
+        # Row 1: Case number, Evidence number
+        case_layout.addWidget(QtWidgets.QLabel("Case Number:"), 0, 0)
+        self.case_edit = QtWidgets.QLineEdit()
+        self.case_edit.setPlaceholderText("e.g., CASE-2024-001")
+        case_layout.addWidget(self.case_edit, 0, 1)
+        
+        case_layout.addWidget(QtWidgets.QLabel("Evidence Number:"), 0, 2)
+        self.evidence_edit = QtWidgets.QLineEdit()
+        self.evidence_edit.setPlaceholderText("e.g., EV-001")
+        case_layout.addWidget(self.evidence_edit, 0, 3)
+        
+        # Row 2: Examiner
+        case_layout.addWidget(QtWidgets.QLabel("Examiner:"), 1, 0)
+        self.examiner_edit = QtWidgets.QLineEdit()
+        try:
+            import getpass
+            self.examiner_edit.setText(getpass.getuser())
+        except Exception:
+            self.examiner_edit.setPlaceholderText("Your name")
+        case_layout.addWidget(self.examiner_edit, 1, 1, 1, 3)
+        
+        # Row 3: Description (full width)
+        case_layout.addWidget(QtWidgets.QLabel("Description:"), 2, 0)
+        self.desc_edit = QtWidgets.QLineEdit()
+        self.desc_edit.setPlaceholderText("Brief description of the evidence")
+        case_layout.addWidget(self.desc_edit, 2, 1, 1, 3)
+        
+        # Row 4: Notes (full width)
+        case_layout.addWidget(QtWidgets.QLabel("Notes:"), 3, 0, QtCore.Qt.AlignTop)
+        self.notes_edit = QtWidgets.QTextEdit()
+        self.notes_edit.setPlaceholderText("Additional notes for chain of custody...")
+        self.notes_edit.setMaximumHeight(60)
+        case_layout.addWidget(self.notes_edit, 3, 1, 1, 3)
+        
+        layout.addWidget(case_group)
         
         # Options
         options_group = QtWidgets.QGroupBox("Imaging Options")
@@ -551,7 +645,7 @@ class ImagingDialog(QtWidgets.QDialog):
         
         layout.addWidget(progress_group)
         
-        # Buttons
+        # Buttons (inside scroll area - user scrolls to reach them)
         btn_layout = QtWidgets.QHBoxLayout()
         btn_layout.addStretch()
         
@@ -599,6 +693,10 @@ class ImagingDialog(QtWidgets.QDialog):
         btn_layout.addWidget(self.btn_close_dlg)
         
         layout.addLayout(btn_layout)
+        
+        # Finalize scroll area
+        scroll.setWidget(content_widget)
+        main_layout.addWidget(scroll, 1)
     
     def refresh_devices(self):
         """Refresh list of physical devices."""
@@ -810,14 +908,27 @@ class ImagingDialog(QtWidgets.QDialog):
         calculate_sha256 = self.sha256_check.isChecked()
         use_error_recovery = self.error_recovery_check.isChecked()
         
+        # Gather case metadata from UI fields
+        metadata = {
+            "case_number": self.case_edit.text().strip(),
+            "evidence_number": self.evidence_edit.text().strip(),
+            "examiner": self.examiner_edit.text().strip(),
+            "description": self.desc_edit.text().strip(),
+            "notes": self.notes_edit.toPlainText().strip(),
+        }
+        
         self.logger.info(f"[IMAGING] Starting disk imaging operation")
         self.logger.info(f"[IMAGING] Source: {src}")
         self.logger.info(f"[IMAGING] Destination: {dst}")
         self.logger.info(f"[IMAGING] Expected size: {self._expected:,} bytes")
         self.logger.info(f"[IMAGING] SHA-256 calculation: {'ENABLED' if calculate_sha256 else 'DISABLED'}")
         self.logger.info(f"[IMAGING] Error recovery mode: {'ENABLED' if use_error_recovery else 'DISABLED'}")
+        if metadata["case_number"]:
+            self.logger.info(f"[IMAGING] Case: {metadata['case_number']}")
+        if metadata["evidence_number"]:
+            self.logger.info(f"[IMAGING] Evidence: {metadata['evidence_number']}")
         
-        self._worker = ImageWorker(src, dst, self._expected, self._dev_info, dd_path, calculate_sha256, use_error_recovery)
+        self._worker = ImageWorker(src, dst, self._expected, self._dev_info, dd_path, metadata, calculate_sha256, use_error_recovery)
         self._worker.progress.connect(self.on_progress)
         self._worker.log.connect(self.logger.info)
         self._worker.finished_report.connect(self.on_finished)
@@ -832,6 +943,12 @@ class ImagingDialog(QtWidgets.QDialog):
         self.btn_close_dlg.setEnabled(False)
         self.sha256_check.setEnabled(False)
         self.error_recovery_check.setEnabled(False)
+        # Disable case info fields during imaging
+        self.case_edit.setEnabled(False)
+        self.evidence_edit.setEnabled(False)
+        self.examiner_edit.setEnabled(False)
+        self.desc_edit.setEnabled(False)
+        self.notes_edit.setEnabled(False)
         
         self._worker.start()
         self.logger.info("[IMAGING] Worker thread started")
@@ -891,7 +1008,7 @@ class ImagingDialog(QtWidgets.QDialog):
             self._cancel_dialog.setValue(pct)
             self._cancel_dialog.setLabelText(f"Calculating hashes of partial image: {pct}%")
     
-    def on_finished(self, report_path: str, copied: int) -> None:
+    def on_finished(self, report_path: str, copied) -> None:
         """Handle successful completion."""
         self.pbar.setValue(100)
         self.lbl_speed.setText("Imaging completed successfully!")
@@ -906,6 +1023,12 @@ class ImagingDialog(QtWidgets.QDialog):
         self.btn_close_dlg.setEnabled(True)
         self.sha256_check.setEnabled(True)
         self.error_recovery_check.setEnabled(True)
+        # Re-enable case info fields
+        self.case_edit.setEnabled(True)
+        self.evidence_edit.setEnabled(True)
+        self.examiner_edit.setEnabled(True)
+        self.desc_edit.setEnabled(True)
+        self.notes_edit.setEnabled(True)
         
         size_gb = copied / (1024**3)
         self.logger.info(f"[IMAGING] Completed successfully: {size_gb:.2f} GB ({copied:,} bytes)")
@@ -918,7 +1041,7 @@ class ImagingDialog(QtWidgets.QDialog):
             f"Report: {Path(report_path).name}"
         )
     
-    def on_partial(self, report_path: str, copied: int) -> None:
+    def on_partial(self, report_path: str, copied) -> None:
         """Handle cancelled or partial completion."""
         # Close the cancelling dialog if it exists
         if hasattr(self, '_cancel_dialog') and self._cancel_dialog:
@@ -938,6 +1061,12 @@ class ImagingDialog(QtWidgets.QDialog):
         self.btn_close_dlg.setEnabled(True)
         self.sha256_check.setEnabled(True)
         self.error_recovery_check.setEnabled(True)
+        # Re-enable case info fields
+        self.case_edit.setEnabled(True)
+        self.evidence_edit.setEnabled(True)
+        self.examiner_edit.setEnabled(True)
+        self.desc_edit.setEnabled(True)
+        self.notes_edit.setEnabled(True)
         
         # Use absolute value to ensure positive display
         copied_abs = abs(copied)

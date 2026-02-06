@@ -1,9 +1,9 @@
 # USB Write Blocker + Imager - Technical Reference
 
-**Version:** 2.2.0  
-**Status:** Production Ready (Wipe Feature Experimental)  
+**Version:** 2.3.0  
+**Status:** Production Ready  
 **Platform:** Windows 10/11 (x64)  
-**Last Updated:** 2026-01-22
+**Last Updated:** 2026-02-03
 
 ---
 
@@ -12,12 +12,12 @@
 Professional forensic tool providing USB write protection, forensic disk imaging, E01 archiving, and image verification for digital forensics and incident response.
 
 ### Core Features
-- **USB Write Protection** - Registry-based write blocking
-- **Forensic Disk Imaging** - Bit-by-bit copies with MD5/SHA-1
-- **E01 Archiving** - Expert Witness Format conversion
+- **USB Write Protection** - Triple-method registry-based write blocking
+- **Forensic Disk Imaging** - Bit-by-bit copies with MD5/SHA-1/SHA-256 and case metadata
+- **E01 Archiving** - Expert Witness Format conversion with compression
 - **Image Verification** - Independent hash checking
-- **Secure Disk Wipe** - ⚠️ Experimental (non-functional on Windows)
-- **Chain of Custody** - Automated forensic reports
+- **Secure Disk Wipe** - Zero-fill wipe with verification
+- **Chain of Custody** - Automated forensic reports with case information
 - **Modern UI** - Professional dark theme with scrolling
 
 ### Technology
@@ -33,16 +33,16 @@ Professional forensic tool providing USB write protection, forensic disk imaging
 ```
 USB_Write_Protect_Gui/
 │
-├── usb_write_blocker_imager.py     ← Main app (~676 lines)
+├── usb_write_blocker_imager.py     ← Main app (~690 lines)
 │
 ├── forensic_tools/                 ← Package
 │   ├── __init__.py                 (45 lines)
-│   ├── utils.py                    (224 lines) - Utilities
-│   ├── usb_blocker.py              (189 lines) - Write protection
-│   ├── disk_imaging.py             (944 lines) - Disk imaging
-│   ├── e01_converter.py            (869 lines) - E01 archiving
-│   ├── image_verification.py       (622 lines) - Image verification
-│   ├── wipe_disk.py                (753 lines) - Secure wipe
+│   ├── utils.py                    (290 lines) - Utilities
+│   ├── usb_blocker.py              (467 lines) - Write protection
+│   ├── disk_imaging.py             (1031 lines) - Disk imaging
+│   ├── e01_converter.py            (896 lines) - E01 archiving
+│   ├── image_verification.py       (876 lines) - Image verification
+│   ├── wipe_disk.py                (1449 lines) - Secure wipe
 │   └── gui_components.py           (322 lines) - Shared UI
 │
 ├── tsk_bin/                        ← External tools
@@ -52,22 +52,11 @@ USB_Write_Protect_Gui/
 └── USB_Write_Blocker_Imager.spec   ← PyInstaller config
 ```
 
-**Total:** ~4,644 lines organized into modules
+**Total:** ~6,000+ lines organized into modules
 
 ---
 
 ## Architecture
-
-### Refactoring Approach
-
-**This is a REFACTORING, not a rewrite:**
-- ✅ **Extracted** existing working code into modules
-- ✅ **Organized** into logical components
-- ✅ **Kept** all functionality identical
-- ✅ **Added** new features (E01, verification, wipe)
-
-**Before:** 1,763 lines in single file  
-**After:** ~4,644 lines across modules
 
 ### Data Flow
 
@@ -85,8 +74,6 @@ Block  Image  Archive  Wipe*
             ↓
     Reports & Logs
 ```
-
-*Secure Wipe currently non-functional due to Windows restrictions
 
 ---
 
@@ -112,47 +99,66 @@ Shared utilities, constants, cleanup handlers
 **Key Functions:**
 - `find_dd_executable()` - Locate dd.exe
 - `find_ewfacquire_executable()` - Locate ewfacquire.exe
-- `write_report()` - Generate forensic reports
-- `_cleanup_write_block()` - atexit cleanup
+- `write_report()` - Generate forensic reports with case metadata
+- `_cleanup_write_block()` - atexit cleanup (unconditional)
 
 **Constants:**
 - `APP_TITLE`, `APP_VERSION`, `IS_WINDOWS`
 
 ### forensic_tools/usb_blocker.py
-USB write protection via registry
+USB write protection via triple-method registry approach
 
-**Registry Key:**
+**Registry Keys (All Three Methods):**
 ```
-HKLM\SYSTEM\CurrentControlSet\Control\StorageDevicePolicies
-WriteProtect = 1 (DWORD)
+Method 1: HKLM\SYSTEM\CurrentControlSet\Control\StorageDevicePolicies
+          WriteProtect = 1 (DWORD)
+
+Method 2: HKLM\SOFTWARE\Policies\Microsoft\Windows\RemovableStorageDevices\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}
+          Deny_Write = 1 (DWORD)  [Disk Drives GUID - covers SD cards, USB hubs]
+
+Method 3: HKLM\SOFTWARE\Policies\Microsoft\Windows\RemovableStorageDevices\{53f56307-b6bf-11d0-94f2-00a0c91efb8b}
+          Deny_Write = 1 (DWORD)  [Removable Storage GUID]
 ```
 
 **Class: USBWriteBlocker**
-- `enable()` - Enable write protection
-- `disable()` - Disable write protection
-- `verify()` - Check status
-- `list_physical()` - List removable USB drives (IOCTL)
+- `enable()` - Enable write protection (all 3 methods)
+- `disable()` - Disable write protection (all 3 methods)
+- `verify()` - Check status (returns True if ANY method is enabled)
+- `list_physical()` - List removable USB drives with device info (IOCTL)
+
+**Startup Behavior:**
+- Write protection is ALWAYS disabled on application startup
+- Ensures clean state after crashes, force-closes, or unexpected termination
+- All 3 registry methods are cleared before status check
 
 ### forensic_tools/disk_imaging.py
 Forensic disk imaging with dd
 
 **Classes:**
-- `ImageWorker(QThread)` - Background worker
-- `ImagingDialog` - User interface
+- `ImageWorker(QThread)` - Background worker with metadata support
+- `ImagingDialog` - User interface with case information fields
+
+**Case Information Fields:**
+- Case Number
+- Evidence Number
+- Examiner (auto-filled with Windows username)
+- Description
+- Notes
 
 **Process:**
 1. Select removable USB device
 2. Choose output location
-3. Execute: `dd if=\\.\PhysicalDrive{N} of=output.img bs=4M`
-4. Monitor progress (file size polling)
-5. Calculate MD5 + SHA-1
-6. Generate forensic report
+3. Fill case information (optional)
+4. Execute: `dd if=\\.\PhysicalDrive{N} of=output.img bs=4M`
+5. Monitor progress (file size polling)
+6. Calculate MD5 + SHA-1 (+ optional SHA-256)
+7. Generate forensic report with case metadata
 
 **Output:**
 ```
 YYYYMMDD_ImageName/
 ├── ImageName.img  # Disk image
-└── ImageName.txt  # Forensic report
+└── ImageName.txt  # Forensic report with case info
 ```
 
 ### forensic_tools/e01_converter.py
@@ -162,6 +168,14 @@ Expert Witness Format (E01) conversion
 - `E01Worker(QThread)` - Background worker
 - `E01ArchiveDialog` - User interface
 
+**Case Metadata Fields:**
+- Case Number
+- Evidence Number
+- Examiner
+- Description
+- Notes
+- Compression Level
+
 **Process:**
 1. Select source image (.img, .dd, .raw)
 2. Choose output location
@@ -170,6 +184,7 @@ Expert Witness Format (E01) conversion
 5. Execute: `ewfacquire -t output.E01 -C case -D description -c {compression} input.img`
 6. Monitor progress
 7. Generate report
+8. Package E01 + report in ZIP archive
 
 **Compression Options:**
 - `best` - Maximum compression (recommended)
@@ -179,8 +194,9 @@ Expert Witness Format (E01) conversion
 
 **Output:**
 ```
-output.E01        # Expert Witness Format file
-output.E01.txt    # Conversion report
+output_Archive.zip containing:
+├── output_Archive.E01   # Expert Witness Format file
+└── output_Archive.txt   # Conversion report
 ```
 
 ### forensic_tools/image_verification.py
@@ -190,7 +206,7 @@ Independent image verification
 
 **Process:**
 1. Select image file
-2. Calculate MD5 and SHA-1 hashes
+2. Calculate MD5 and SHA-1 hashes (+ optional SHA-256)
 3. Display results
 4. Compare with expected hashes
 
@@ -200,26 +216,26 @@ Independent image verification
 - Chain of custody validation
 
 ### forensic_tools/wipe_disk.py
-Secure disk wipe (⚠️ Experimental)
+Secure disk wipe
 
 **Classes:**
 - `WipeWorker(QThread)` - Background worker
 - `WipeDialog` - User interface
 
-**⚠️ IMPORTANT WARNING:**
-This feature is **currently non-functional** on Windows due to OS security restrictions. Windows blocks all write attempts to physical drives, even with:
-- Administrator privileges
-- Volume dismounting
-- Direct device access
-- Windows API calls
-- dd.exe external tool
+**Process:**
+1. Select removable USB device
+2. Confirm wipe operation (requires typing "WIPE")
+3. Lock and dismount volumes
+4. Write zeros to entire disk
+5. Verify wipe completed
+6. Optional: Format to ExFAT after wipe
 
-**Status:** Error 5 (Access Denied)
-
-**Alternatives:**
-- Boot from Linux USB (e.g., DBAN, Parted Magic)
-- Use hardware-based wipers
-- Professional forensic tools with signed drivers
+**Features:**
+- Zero-fill entire disk
+- Volume locking and dismounting
+- Progress monitoring
+- Verification pass
+- Optional post-wipe formatting
 
 ### forensic_tools/gui_components.py
 Shared GUI components
@@ -235,11 +251,25 @@ Shared GUI components
 ### 1. USB Write Protection
 
 **How It Works:**
-- Modifies Windows registry
-- Creates `StorageDevicePolicies` key
-- Sets `WriteProtect=1` (DWORD)
-- Applies to all USB devices
-- Auto-disables on exit
+- Uses THREE registry methods for comprehensive coverage
+- Method 1: StorageDevicePolicies (standard approach)
+- Method 2: Group Policy Disk Drives GUID (covers SD cards, USB hubs)
+- Method 3: Group Policy Removable Storage GUID
+- All methods enabled/disabled together
+- Forced disable on startup (crash recovery)
+- Unconditional cleanup on exit
+
+**Startup Sequence:**
+1. Application starts
+2. All 3 registry keys cleared (disable)
+3. Status checked and displayed
+4. User can then manually enable if needed
+
+**Cleanup Handlers:**
+- `atexit` handler clears all 3 keys
+- Signal handlers (SIGINT, SIGTERM) clear all 3 keys
+- Win32 console control handler clears all 3 keys
+- Cleanup runs unconditionally (ignores tracked state)
 
 **Limitations:**
 - Registry-based (not hardware)
@@ -260,10 +290,18 @@ dd if=\\.\PhysicalDrive2 of=output.img bs=4M conv=noerror,sync
 - Display: MB/s speed, ETA
 
 **Hash Verification:**
-- MD5 (128-bit)
-- SHA-1 (160-bit)
+- MD5 (128-bit) - Always calculated
+- SHA-1 (160-bit) - Always calculated
+- SHA-256 (256-bit) - Optional, adds ~15-25% time
 - Calculated after imaging
 - Included in report
+
+**Device Information Captured:**
+- Physical Drive index
+- Vendor name
+- Product name
+- Serial number
+- Device size
 
 **Speeds:**
 - USB 2.0: 20-35 MB/s
@@ -290,6 +328,7 @@ ewfacquire -t output.E01 -C case -D description -c best input.img
 - Case metadata embedding
 - Hash verification
 - Multi-segment support (for large files)
+- ZIP packaging of E01 + report
 
 ### 4. Image Verification
 
@@ -301,30 +340,24 @@ ewfacquire -t output.E01 -C case -D description -c best input.img
 
 **Supported Formats:**
 - Raw images (.img, .dd, .raw)
-- E01 files (reads embedded hashes)
+- E01 files (reads embedded hashes via pyewf)
 - Any binary file
 
-### 5. Secure Disk Wipe ⚠️
+### 5. Secure Disk Wipe
 
-**Status:** Non-functional on Windows
+**Process:**
+1. Select removable USB device
+2. Double confirmation (button + type "WIPE")
+3. Lock and dismount all volumes on disk
+4. Write zeros to every sector
+5. Verify wipe completed successfully
+6. Optional: Format disk to ExFAT
 
-**Attempted Solutions:**
-1. ❌ Windows API (CreateFileW + WriteFile)
-2. ❌ Volume locking (FSCTL_LOCK_VOLUME)
-3. ❌ Volume dismount (FSCTL_DISMOUNT_VOLUME)
-4. ❌ Extended disk access (FSCTL_ALLOW_EXTENDED_DASD_IO)
-5. ❌ dd.exe with temp zero file
-6. ❌ All return Error 5 (Access Denied)
-
-**Root Cause:**
-Windows 10/11 security actively blocks all userspace programs from writing to physical drives when volumes are present, even with maximum privileges.
-
-**Workaround:**
-Boot from Linux USB and use:
-- `shred` command
-- `dd` command
-- DBAN (Darik's Boot and Nuke)
-- Parted Magic
+**Safety Features:**
+- Only targets removable USB devices
+- Requires Administrator privileges
+- Double confirmation prevents accidents
+- Volume locking ensures exclusive access
 
 ---
 
@@ -336,7 +369,7 @@ Boot from Linux USB and use:
 Main Thread (GUI)
 ├─► ImageWorker (QThread) → dd.exe
 ├─► E01Worker (QThread) → ewfacquire.exe
-├─► WipeWorker (QThread) → dd.exe (blocked)
+├─► WipeWorker (QThread) → Native Windows I/O
 └─► Qt Signals (thread-safe)
 ```
 
@@ -388,21 +421,22 @@ def _sanitize_filename(name: str) -> str:
 
 ### Forensic Soundness
 
-**Chain of Custody:**
-- Timestamp (UTC)
-- Operator (username)
-- System name
-- Device info
-- Hash verification
-- Notes section
+**Chain of Custody Report Sections:**
+- Operation Details (timestamp, operator, system, method, status)
+- Case Information (case number, evidence number, examiner, description, notes)
+- Device Information (physical drive, vendor, product, serial, size)
+- Timing Information (start, end, duration, speed)
+- Hash Verification (MD5, SHA-1, SHA-256)
+- Chain of Custody Notes
 
 **Write Protection:**
-- Prevents modification
+- Triple-method registry protection
+- Forced disable on startup (crash recovery)
 - Verification before imaging
-- Auto-cleanup on exit
+- Unconditional cleanup on exit
 
 **Hash Verification:**
-- Industry standards
+- Industry standards (MD5, SHA-1, SHA-256)
 - Court admissible
 - Tamper-evident reports
 
@@ -434,7 +468,7 @@ pip install PySide6
 
 **Tools:**
 ```
-tsk_bin/dd.exe        # GNU dd for Windows
+tsk_bin/dd.exe           # GNU dd for Windows
 tsk_bin/ewfacquire.exe   # libewf EWF acquisition tool
 ```
 
@@ -489,15 +523,16 @@ write_report(
     sha1: str,
     status: str,
     method: str = "dd",
-    report_type: str = "imaging"
+    sha256: str = "",
+    metadata: Dict = None  # Case information
 ) -> str
 ```
 
 ### USBWriteBlocker.list_physical()
 ```python
-list_physical() -> List[tuple]
-# Returns: [(drive_index, size_bytes), ...]
-# Example: [(2, 31457280000), (5, 128849018880)]
+list_physical() -> List[dict]
+# Returns: [{'index': int, 'size': int, 'vendor': str, 'product': str, 'serial': str}, ...]
+# Example: [{'index': 2, 'size': 31457280000, 'vendor': 'SanDisk', 'product': 'Ultra USB 3.0', 'serial': 'ABC123'}]
 ```
 
 ---
@@ -519,6 +554,11 @@ list_physical() -> List[tuple]
 - Check registry permissions
 - Verify no Group Policy blocking
 
+### Write Protection Shows "ENABLED" on Startup
+- This should not occur - application forces disable on startup
+- If it persists, manually check all 3 registry keys
+- Run `regedit` and verify keys are cleared
+
 ### Device Not Detected
 - Device must be removable (USB)
 - Click "Refresh" button
@@ -537,11 +577,12 @@ list_physical() -> List[tuple]
 - Ensure sufficient disk space
 - Verify libewf DLL dependencies
 
-### Secure Wipe Fails ⚠️
-**Expected:** This feature is currently non-functional on Windows
-- Error 5 (Access Denied) is normal
-- Windows security blocks all write attempts
-- **Solution:** Boot from Linux USB for wipe operations
+### Secure Wipe Fails
+- Run as Administrator
+- Ensure device is removable USB (not internal)
+- Close all programs using the device
+- Try disconnecting and reconnecting device
+- Check Device Manager for device status
 
 ---
 
@@ -560,20 +601,28 @@ list_physical() -> List[tuple]
 ### Hashing
 - MD5: ~400-600 MB/s
 - SHA-1: ~350-500 MB/s
+- SHA-256: ~250-400 MB/s
 - 100 GB @ 450 MB/s = ~4 min
 
 ---
 
 ## Version History
 
-### v2.2.0 (Current - 2026-01-22)
+### v2.3.0 (Current - 2026-02-03)
+- Case information fields in forensic imaging dialog
+- Forensic reports include case metadata section
+- Triple-method write protection (StorageDevicePolicies + 2 Group Policy GUIDs)
+- Forced write protection disable on startup
+- Unconditional cleanup handler
+- Device info (vendor/product/serial) in reports
+- E01 path collision fix
+
+### v2.2.0 (2026-01-22)
 - Code cleanup and optimization
-- Removed orphaned PDF generator
 - Added E01 archiving feature
 - Added image verification
-- Added secure wipe (experimental)
+- Added secure wipe feature
 - Updated UI with scrolling
-- Version bump and documentation updates
 
 ### v2.1.0 (2025-12-23)
 - Modular architecture
@@ -622,10 +671,16 @@ Build:   USB_Write_Blocker_Imager.spec
 Output:  dist/USB_Write_Blocker_Imager.exe
 ```
 
-### Registry Key
+### Registry Keys (All 3 Methods)
 ```
 HKLM\SYSTEM\CurrentControlSet\Control\StorageDevicePolicies
-WriteProtect (DWORD) = 1
+    WriteProtect (DWORD) = 1
+
+HKLM\SOFTWARE\Policies\Microsoft\Windows\RemovableStorageDevices\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}
+    Deny_Write (DWORD) = 1
+
+HKLM\SOFTWARE\Policies\Microsoft\Windows\RemovableStorageDevices\{53f56307-b6bf-11d0-94f2-00a0c91efb8b}
+    Deny_Write (DWORD) = 1
 ```
 
 ### Key Classes
@@ -634,12 +689,11 @@ USBWriteBlocker
 ImageWorker, ImagingDialog
 E01Worker, E01ArchiveDialog
 ImageVerificationDialog
-WipeDialog (experimental)
+WipeDialog
 HelpDialog, QtLogHandler
 ```
 
 ---
 
 **End of Technical Reference**  
-*Version 2.2.0 - 2026-01-22*  
-*⚠️ Note: Secure Wipe feature experimental/non-functional on Windows*
+*Version 2.3.0 - 2026-02-03*

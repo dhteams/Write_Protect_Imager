@@ -418,7 +418,16 @@ class E01Worker(QtCore.QThread):
 
     def _create_zip_archive(self, e01_path: str, report_path: str) -> Optional[str]:
         """Create zip archive containing E01 and report."""
-        zip_name = Path(e01_path).stem + "_Archive.zip"
+        # Get the E01 filename stem
+        stem = Path(e01_path).stem
+        
+        # Prevent double "_Archive" suffix
+        # If E01 is named "..._Archive.E01", zip should be "..._Archive.zip" not "..._Archive_Archive.zip"
+        if stem.endswith("_Archive"):
+            zip_name = f"{stem}.zip"
+        else:
+            zip_name = f"{stem}_Archive.zip"
+        
         zip_path = os.path.join(os.path.dirname(e01_path), zip_name)
         
         try:
@@ -781,7 +790,10 @@ class E01ArchiveDialog(QtWidgets.QDialog):
                 dst = os.path.splitext(dst)[0] + ".zip"
         
         # Derive E01 path from zip path
-        e01_dst = dst.replace("_Archive.zip", ".E01").replace(".zip", ".E01")
+        # IMPORTANT: Keep "_Archive" in the filename to avoid collision with parent folder
+        # e.g., 20260203_PhysicalDrive2_Archive.zip -> 20260203_PhysicalDrive2_Archive.E01
+        # This prevents collision when folder is named 20260203_PhysicalDrive2
+        e01_dst = dst.replace(".zip", ".E01")
         if not e01_dst.upper().endswith('.E01'):
             e01_dst = os.path.splitext(dst)[0] + ".E01"
         

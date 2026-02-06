@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 USB Write Blocker + Imager
-Version 2.1.0 - Modular Architecture
+Version 2.3.0 - Modular Architecture
 
 Professional forensic tool for:
 - USB write protection (registry-based)
@@ -339,9 +339,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # Initialize components
         self.blocker = USBWriteBlocker()
         
-        # Force write protection OFF on startup (clears leftover keys from crashes)
-        self.blocker.disable()
-        
         # Setup logging
         self.logger = logging.getLogger("ForensicTools")
         self.logger.setLevel(logging.DEBUG)
@@ -349,7 +346,12 @@ class MainWindow(QtWidgets.QMainWindow):
         handler.setFormatter(logging.Formatter("%(asctime)s - %(message)s", datefmt="%H:%M:%S"))
         self.logger.addHandler(handler)
         
-        # Initial status check
+        # CRITICAL: Force disable write protection on startup
+        # This ensures clean state after crashes, force-closes, or unexpected termination
+        # All 3 registry methods are cleared to prevent "stuck enabled" state
+        self.blocker.disable()
+        
+        # Initial status check (will now always show DISABLED on fresh start)
         self.refresh_status()
         self.logger.info(f"{APP_TITLE} {APP_VERSION} initialized")
         if self.is_admin():
@@ -361,6 +363,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.logger.info("=== Tool Path Debug Info ===")
         for line in get_tool_search_debug_info().split('\n'):
             self.logger.info(line)
+    
+    def closeEvent(self, event):
+        """Handle window close - ensure write protection is disabled."""
+        self.logger.info("=== Application Closing ===")
+        self.logger.info("Ensuring write protection is disabled...")
+        self.blocker.disable()
+        self.logger.info("Write protection disabled, closing application")
+        event.accept()
     
     def apply_modern_theme(self):
         """Apply modern dark theme styling."""
@@ -379,6 +389,42 @@ class MainWindow(QtWidgets.QMainWindow):
                 font-weight: 700;
                 font-size: 14px;
                 border: 2px solid #dc2626;
+            }
+            QCheckBox {
+                color: #e8e8e8;
+                spacing: 8px;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border: 2px solid #5a6270;
+                border-radius: 4px;
+                background: #252932;
+            }
+            QCheckBox::indicator:checked {
+                background: #4a90e2;
+                border-color: #4a90e2;
+            }
+            QCheckBox::indicator:hover {
+                border-color: #4a90e2;
+            }
+            QRadioButton {
+                color: #e8e8e8;
+                spacing: 8px;
+            }
+            QRadioButton::indicator {
+                width: 18px;
+                height: 18px;
+                border: 2px solid #5a6270;
+                border-radius: 9px;
+                background: #252932;
+            }
+            QRadioButton::indicator:checked {
+                background: #4a90e2;
+                border-color: #4a90e2;
+            }
+            QRadioButton::indicator:hover {
+                border-color: #4a90e2;
             }
         """)
     
@@ -626,6 +672,27 @@ def main():
     app = QtWidgets.QApplication(sys.argv)
     app.setApplicationName(APP_TITLE)
     app.setApplicationVersion(APP_VERSION)
+    
+    # Force dark theme - override Windows 11 system theme
+    # This MUST be set at application level to prevent system theme override
+    palette = QtGui.QPalette()
+    palette.setColor(QtGui.QPalette.Window, QtGui.QColor(26, 29, 35))           # Main background
+    palette.setColor(QtGui.QPalette.WindowText, QtCore.Qt.white)                # Window text
+    palette.setColor(QtGui.QPalette.Base, QtGui.QColor(42, 42, 42))            # Input backgrounds
+    palette.setColor(QtGui.QPalette.AlternateBase, QtGui.QColor(58, 58, 58))   # Alternate rows
+    palette.setColor(QtGui.QPalette.ToolTipBase, QtCore.Qt.white)              # Tooltip background
+    palette.setColor(QtGui.QPalette.ToolTipText, QtCore.Qt.white)              # Tooltip text
+    palette.setColor(QtGui.QPalette.Text, QtCore.Qt.white)                     # General text
+    palette.setColor(QtGui.QPalette.Button, QtGui.QColor(42, 42, 42))          # Button background
+    palette.setColor(QtGui.QPalette.ButtonText, QtCore.Qt.white)               # Button text
+    palette.setColor(QtGui.QPalette.BrightText, QtCore.Qt.red)                 # Bright text
+    palette.setColor(QtGui.QPalette.Link, QtGui.QColor(74, 158, 255))          # Links
+    palette.setColor(QtGui.QPalette.Highlight, QtGui.QColor(74, 158, 255))     # Selection highlight
+    palette.setColor(QtGui.QPalette.HighlightedText, QtCore.Qt.black)          # Selected text
+    app.setPalette(palette)
+    
+    # Use Fusion style for consistent cross-platform appearance
+    app.setStyle("Fusion")
     
     # Set application icon if available
     try:
